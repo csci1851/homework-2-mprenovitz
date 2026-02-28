@@ -22,6 +22,7 @@ from sklearn.metrics import (
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.tree import plot_tree
 
 # Set plotting style
 sns.set_style("whitegrid")
@@ -42,6 +43,7 @@ class GradientBoostingModel:
         max_features: Optional[int] = None,
         random_state: int = 42,
         use_scaler: bool = False,
+        multiclass: bool = False
     ):
         """
         Initialize Gradient Boosting model with customizable parameters
@@ -76,6 +78,7 @@ class GradientBoostingModel:
         self.feature_names = None
         self.task = task
         self.use_scaler = use_scaler
+        self.multiclass = multiclass
         self.scaler = StandardScaler() if use_scaler else None
 
     def train_test_split(
@@ -98,7 +101,11 @@ class GradientBoostingModel:
             X_train, X_test, y_train, y_test: Split datasets
         """
         # TODO: Implement train/test split and track feature names
-        pass
+
+        #ask what it means to track feature names
+        self.feature_names=X.columns
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
+        return X_train, X_test, y_train, y_test
 
     def fit(self, X_train: pd.DataFrame, y_train: pd.Series, verbose: bool = True):
         """
@@ -113,8 +120,15 @@ class GradientBoostingModel:
             self: Trained model instance
         """
         # TODO: Create classifier/regressor based on task and fit it
-        pass
+        X_train = self.scaler.fit_transform(X_train) if self.use_scaler else X_train
+        if self.task == 'classification':
+            self.model=GradientBoostingClassifier(**self.params)
+        else:
+            self.model=GradientBoostingRegressor(**self.params)
 
+        self.model.fit(X_train, y_train)
+
+        return self
     def predict(
         self, X: pd.DataFrame, return_proba: bool = False
     ) -> Union[np.ndarray, pd.DataFrame]:
@@ -129,7 +143,12 @@ class GradientBoostingModel:
             Predictions or probability estimates
         """
         # TODO: Apply scaler when enabled, then predict
-        pass
+        X = self.scaler.transform(X) if self.use_scaler else X
+        if return_proba and self.task == 'classification': 
+            return self.model.predict_proba(X) if self.multiclass else self.model.predict_proba(X)[:, 1]
+        else: 
+            y_pred = self.model.predict(X)
+            return y_pred
 
     def evaluate(self, X_test: pd.DataFrame, y_test: pd.Series) -> Dict:
         """
@@ -144,17 +163,31 @@ class GradientBoostingModel:
         """
 
         # TODO: Compute metrics (classification vs regression)
-        if self.task == "classification":
+        y_pred = self.predict(X_test, return_proba=False)
+        y_prob_a = self.predict(X_test, return_proba=True)
+        if self.task == "classification":      
             metrics = {
-                "accuracy": None,
-                "precision": None,
-                "recall": None,
-                "f1": None,
-                "roc_auc": None,
+                "accuracy": accuracy_score(y_true=y_test, y_pred=y_pred),
+                "precision": 
+                    precision_score(y_true=y_test, y_pred=y_pred, average='macro') if self.multiclass 
+                    else precision_score(y_true=y_test, y_pred=y_pred),
+                "recall": 
+                    recall_score(y_true=y_test, y_pred=y_pred, average='macro') if self.multiclass 
+                    else recall_score(y_true=y_test, y_pred=y_pred),
+                "f1": 
+                    f1_score(y_true=y_test, y_pred=y_pred, average='macro') if self.multiclass 
+                    else f1_score(y_true=y_test, y_pred=y_pred),
+                "roc_auc": 
+                    roc_auc_score(y_true=y_test, y_score=y_prob_a, multi_class='ovr') if self.multiclass 
+                    else roc_auc_score(y_true=y_test, y_score=y_prob_a),
             }
         else:
-            metrics = {"rmse": None, "mae": None, "r2": None}
-
+            metrics = {
+                "rmse": np.sqrt(mean_squared_error(y_true=y_test, y_pred=y_pred)), 
+                "mae": mean_absolute_error(y_true=y_test, y_pred=y_pred), 
+                "r2": r2_score(y_true=y_test, y_pred=y_pred)
+                }
+        
         return metrics
 
     def cross_validate(
@@ -175,17 +208,25 @@ class GradientBoostingModel:
             Dictionary of cross-validation results using sklearn cross_val_score
         """
         # TODO: Use Pipeline when scaling, and choose classifier/regressor based on task
-        model = None
+
+        #TODO: ask about if we use self.model or GradientBoosted...()
+        task = GradientBoostingClassifier(**self.params) if self.task == "classification" else GradientBoostingRegressor(**self.params)
+        model = Pipeline([('scalar', StandardScaler()), ('model', task)]) if self.use_scaler else task
 
         # TODO: Choose scoring metrics based on classification vs regression
         if self.task == "classification":
-            scoring = ["accuracy", "precision", "recall", "f1", "roc_auc"]
+            scoring = \
+                ["accuracy", "precision_macro", "recall_macro", "f1_macro", "roc_auc_ovr"] if self.multiclass \
+                else ["accuracy", "precision", "recall", "f1", "roc_auc"]
         else:
             scoring = ["neg_mean_squared_error", "neg_mean_absolute_error", "r2"]
-
         results = {}
-        # TODO: Get mean, stdev of cross_val_score for each metric
-        pass
+         # TODO: Get mean, stdev of cross_val_score for each metric
+        for s in scoring:
+            scores = cross_val_score(model, X, y, scoring=s, cv=cv, n_jobs=-1)
+            results[s] = {'mean': scores.mean(), 'std': scores.std()}
+        
+        return results
 
     def get_feature_importance(
         self, plot: bool = False, top_n: int = 20
@@ -198,7 +239,19 @@ class GradientBoostingModel:
         """
 
         # TODO: Optionally plot a bar chart of top_n feature importances
-        pass
+
+        #TODO: ask about feature importance --> 
+       
+        feature_coef = pd.DataFrame(data=self.model.feature_importances_, index=self.feature_names, columns=["Importance"])
+        top_n_features = feature_coef.sort_values(by="Importance", ascending=False).head(top_n)
+        #TODO: plot:
+        if plot:
+            plt.figure()
+            plt.bar(top_n_features)
+            plt.xlabel('Features')
+            plt.ylabel('Importance')
+            plt.show()
+        return top_n_features
 
     def tune_hyperparameters(
         self,
@@ -221,14 +274,18 @@ class GradientBoostingModel:
         Returns:
             Dictionary with best parameters and results
         """
-        # TODO: Choose classifier or regressor based on task
-        model = None
+        # Choose classifier or regressor based on task
+        model = GradientBoostingClassifier() if self.task == 'classification' else GradientBoostingRegressor()
 
-        # TODO: Initialize GridSearchCV
-        grid_search = None
+        # Initialize GridSearchCV
+        grid_search = GridSearchCV(model, param_grid=param_grid, cv=cv, scoring=scoring, n_jobs=-1)
 
-        # TODO: Perform grid search for hyperparameter tuning
-        pass
+        # Perform grid search for hyperparameter tuning
+        grid_search.fit(X, y)
+
+
+        #TODO: ask what the best results are, is it just score
+        return {'best_params': grid_search.best_params_, 'best_score': grid_search.best_score_}
 
     def plot_tree(
         self, tree_index: int = 0, figsize: Tuple[int, int] = (20, 15)
@@ -241,4 +298,15 @@ class GradientBoostingModel:
             figsize: Figure size for the plot
         """
 
-        pass
+        tree = self.model.estimators_[tree_index]
+
+        plt.figure(figsize=figsize)
+        plot_tree(
+            tree,
+            feature_names=self.feature_names,
+            # class_names=["No Disease", "Disease"], TODO: see how this is used
+            filled=True,
+            rounded=True,
+            max_depth=self.params['max_depth']
+        )
+        plt.title
